@@ -1,0 +1,17 @@
+# ---- secrets: never commit, never track ----
+ght.txt
+tools/.keystore.env
+*.keystore
+*.keystore.b64
+*.jks
+key.properties
+
+# ---- local only ----
+.workbuddy-ai/
+src/
+build/
+dist/
+target/
+*.log
+.DS_Store
+Thumbs.db

@@ -1,0 +1,38 @@
+name: Generate flutter-rust-bridge
+description: >
+  Regenerate the flutter_rust_bridge glue for the RustDesk checkout in ./src.
+  `flutter/lib/generated_bridge.dart` is NOT committed upstream, so this must run
+  before any `cargo build` or `flutter build`. Requires Flutter and Rust to be
+  installed by the calling job (we deliberately reuse the build's Flutter version
+  so the generated Dart matches the SDK that compiles it).
+
+runs:
+  using: composite
+  steps:
+    - name: Install codegen tools
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo install cargo-expand --version 1.0.95 --locked
+        cargo install flutter_rust_bridge_codegen --version 1.80.1 --features "uuid" --locked
+
+    - name: Resolve Dart packages
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd src/flutter
+        flutter pub get
+
+    - name: Run flutter_rust_bridge_codegen
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd src
+        flutter_rust_bridge_codegen \
+          --rust-input ./src/flutter_ffi.rs \
+          --dart-output ./flutter/lib/generated_bridge.dart \
+          --c-output ./flutter/macos/Runner/bridge_generated.h
+        cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+        test -s ./flutter/lib/generated_bridge.dart
+        test -s ./src/bridge_generated.rs
+        echo "bridge generated: $(wc -l < ./flutter/lib/generated_bridge.dart) dart lines"

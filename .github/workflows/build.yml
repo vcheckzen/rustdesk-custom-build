@@ -1,0 +1,380 @@
+name: Build custom RustDesk (Windows + Android)
+
+on:
+  workflow_dispatch:
+    inputs:
+      id_server:
+        description: "ID/rendezvous server, host[:port]. Empty = use secret RD_ID_SERVER or placeholder."
+        required: false
+        default: ""
+      relay_server:
+        description: "Relay server, host[:port]. Empty = use secret RD_RELAY_SERVER or none."
+        required: false
+        default: ""
+      api_server:
+        description: "API server URL, https://host. Empty = use secret RD_API_SERVER or site domain."
+        required: false
+        default: ""
+      pub_key:
+        description: "hbbs public key. Empty = use secret RD_PUB_KEY."
+        required: false
+        default: ""
+      app_id:
+        description: "Android applicationId. Empty = im.logi.rd."
+        required: false
+        default: ""
+      app_name:
+        description: "Display name. Empty = 远程协助."
+        required: false
+        default: ""
+      site_domain:
+        description: "Domain that replaces rustdesk.com everywhere. Empty = secret RD_SITE_DOMAIN or rd.example.com."
+        required: false
+        default: ""
+      publish_release:
+        description: "Publish a GitHub Release. Turn off to keep a configured build private (artifacts still uploaded)."
+        type: boolean
+        required: false
+        default: true
+  push:
+    branches: [main, master]
+
+# Least privilege by default; only the release job elevates.
+permissions:
+  contents: read
+
+env:
+  # Pinned upstream. Bump this (and re-check `patches/apply.py` anchors) to upgrade.
+  UPSTREAM_REPO: alonginwind/rustdesk
+  UPSTREAM_SHA: cd3151f84bc322da889a6973363f2acd3af6d1c9
+  VERSION: "1.5.3"
+
+  RUST_VERSION: "1.75"
+  FLUTTER_VERSION: "3.24.5"
+  CARGO_NDK_VERSION: "3.1.2"
+  NDK_VERSION: "r28c"
+  LLVM_VERSION: "15.0.6"
+  VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+
+  # Build configuration: dispatch input > repository secret > repository variable > placeholder.
+  # Nothing here is committed; the repo only ever contains placeholders.
+  RD_APP_ID: ${{ inputs.app_id || secrets.RD_APP_ID || vars.RD_APP_ID || '' }}
+  RD_APP_NAME: ${{ inputs.app_name || secrets.RD_APP_NAME || vars.RD_APP_NAME || '' }}
+  RD_ID_SERVER: ${{ inputs.id_server || secrets.RD_ID_SERVER || vars.RD_ID_SERVER || '' }}
+  RD_RELAY_SERVER: ${{ inputs.relay_server || secrets.RD_RELAY_SERVER || vars.RD_RELAY_SERVER || '' }}
+  RD_API_SERVER: ${{ inputs.api_server || secrets.RD_API_SERVER || vars.RD_API_SERVER || '' }}
+  RD_PUB_KEY: ${{ inputs.pub_key || secrets.RD_PUB_KEY || vars.RD_PUB_KEY || '' }}
+  RD_SITE_DOMAIN: ${{ inputs.site_domain || secrets.RD_SITE_DOMAIN || vars.RD_SITE_DOMAIN || '' }}
+
+
+jobs:
+  # ---------------------------------------------------------------------------------------
+  android:
+    name: Android (arm64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout builder
+        uses: actions/checkout@v4
+
+      - name: Secret hygiene check
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad=$(git ls-files | grep -Ei '(^|/)ght\.txt$|\.keystore$|\.jks$|keystore\.env$|(^|/)key\.properties$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::secret material is tracked in this repo: $bad"
+            exit 1
+          fi
+          echo "no secret files tracked"
+
+      - name: Checkout upstream RustDesk
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_SHA }}
+          path: src
+          submodules: recursive
+
+      - name: Apply patches
+        run: python3 patches/apply.py src
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake curl gcc-multilib git g++ g++-multilib \
+            libasound2-dev libc6-dev libclang-dev libunwind-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgtk-3-dev libpulse-dev libva-dev \
+            libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxdo-dev libxfixes-dev llvm-dev nasm ninja-build \
+            openjdk-17-jdk-headless pkg-config tree wget
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Patch Flutter (dropdown filter)
+        run: |
+          cd "$(dirname "$(dirname "$(which flutter)")")"
+          git apply "$GITHUB_WORKSPACE/src/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-linux-android
+          components: rustfmt
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: android-arm64
+          workspaces: src -> target
+
+      - name: Build native dependencies
+        working-directory: src
+        run: ./flutter/build_android_deps.sh arm64-v8a
+
+      - name: Generate flutter-rust-bridge
+        uses: ./.github/actions/gen-bridge
+
+      - name: Build liblibrustdesk.so
+        working-directory: src
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
+          ./flutter/ndk_arm64.sh
+          mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
+          cp ./target/aarch64-linux-android/release/liblibrustdesk.so \
+             ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+
+      - name: Configure Android signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        working-directory: src
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > flutter/android/app/key.jks
+            printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=key.jks\n' \
+              "$KEYSTORE_PASSWORD" "$KEY_PASSWORD" "$KEY_ALIAS" > flutter/android/key.properties
+            echo "release signing configured"
+          else
+            echo "::warning::ANDROID_KEYSTORE_B64 is not set, falling back to debug signing"
+            sed -i "s/signingConfigs.release/signingConfigs.debug/g" flutter/android/app/build.gradle
+          fi
+
+      - name: Build APK
+        working-directory: src
+        run: |
+          flutter build apk --release --target-platform android-arm64 --split-per-abi
+          cp ./build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+             "$GITHUB_WORKSPACE/rustdesk-${{ env.VERSION }}-arm64-v8a.apk"
+
+      - name: Verify APK identity
+        run: |
+          set -euo pipefail
+          APK="rustdesk-${{ env.VERSION }}-arm64-v8a.apk"
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          AAPT=$(ls "$SDK"/build-tools/*/aapt2 2>/dev/null | tail -1)
+          if [ -z "$AAPT" ]; then
+            echo "::warning::aapt2 not found, skipping package-name check"
+            exit 0
+          fi
+          "$AAPT" dump packagename "$APK"
+          "$AAPT" dump packagename "$APK" | grep -qx "im.logi.rd"
+          echo "package name verified: im.logi.rd"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: rustdesk-${{ env.VERSION }}-arm64-v8a.apk
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------------------
+  windows:
+    name: Windows (x64)
+    runs-on: windows-2022
+    steps:
+      - name: Checkout builder
+        uses: actions/checkout@v4
+
+      - name: Secret hygiene check
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad=$(git ls-files | grep -Ei '(^|/)ght\.txt$|\.keystore$|\.jks$|keystore\.env$|(^|/)key\.properties$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::secret material is tracked in this repo: $bad"
+            exit 1
+          fi
+          echo "no secret files tracked"
+
+      - name: Checkout upstream RustDesk
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_SHA }}
+          path: src
+          submodules: recursive
+
+      - name: Apply patches
+        run: python3 patches/apply.py src
+
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@v2.0.9
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Replace Flutter engine with RustDesk's patched engine
+        shell: pwsh
+        run: |
+          flutter doctor -v
+          flutter precache --windows
+          Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
+          Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
+          $dest = "C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/"
+          if (-not (Test-Path $dest)) { throw "engine dir not found: $dest" }
+          Copy-Item -Force -Recurse "windows-x64-release/*" $dest
+
+      - name: Patch Flutter (dropdown filter)
+        shell: bash
+        run: |
+          cd "$(dirname "$(dirname "$(which flutter)")")"
+          git apply "$GITHUB_WORKSPACE/src/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: windows-x64
+          workspaces: src -> target
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        shell: bash
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+        run: |
+          set -euo pipefail
+          if ! "$VCPKG_ROOT/vcpkg" install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do echo "== $f"; cat "$f"; done
+            exit 1
+          fi
+
+      - name: Generate flutter-rust-bridge
+        uses: ./.github/actions/gen-bridge
+
+      - name: Build RustDesk
+        shell: pwsh
+        working-directory: src
+        run: |
+          python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          if ($LASTEXITCODE -ne 0) { throw "build.py failed" }
+          Move-Item -Force ./flutter/build/windows/x64/runner/Release ./rustdesk
+
+      - name: Verify build output
+        shell: pwsh
+        working-directory: src
+        run: |
+          if (-not (Test-Path ./rustdesk/rustdesk.exe)) { throw "rustdesk.exe missing" }
+          & ./rustdesk/rustdesk.exe --version
+
+      - name: Package
+        shell: pwsh
+        working-directory: src
+        run: |
+          Compress-Archive -Path ./rustdesk -DestinationPath "$env:GITHUB_WORKSPACE/rustdesk-${{ env.VERSION }}-windows-x64.zip" -Force
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: rustdesk-${{ env.VERSION }}-windows-x64.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------------------
+  release:
+    name: Publish release
+    needs: [android, windows]
+    if: ${{ inputs.publish_release != false }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List
+        run: ls -lh dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}-custom.${{ github.run_number }}
+          name: RustDesk ${{ env.VERSION }} custom (build ${{ github.run_number }})
+          body: |
+            Custom RustDesk build.
+            - Android package: `im.logi.rd`
+            - All outbound TCP tunnelled through the Baidu front proxy
+            - Server is configured at runtime: Settings -> ID/Relay Server
+          files: dist/*
+          draft: false
+          fail_on_unmatched_files: true
