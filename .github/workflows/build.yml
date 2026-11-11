@@ -181,8 +181,21 @@ jobs:
 
       - name: Patch Flutter (dropdown filter)
         run: |
+          set -euo pipefail
           cd "$(dirname "$(dirname "$(which flutter)")")"
-          git apply "$GITHUB_WORKSPACE/src/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          PATCH="$GITHUB_WORKSPACE/src/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          # subosito/flutter-action caches the SDK *including our edit*, so on a cache hit the
+          # patch is already in place and a bare `git apply` dies with "patch does not apply".
+          if git apply --check "$PATCH" 2>/dev/null; then
+            git apply "$PATCH"
+            echo "dropdown filter patch applied"
+          elif git apply --reverse --check "$PATCH" 2>/dev/null; then
+            echo "dropdown filter patch already present (restored from the Flutter cache)"
+          else
+            echo "::error::patch neither applies nor is already applied — the Flutter SDK moved"
+            git apply --check -v "$PATCH" || true
+            exit 1
+          fi
 
       - name: Setup Android NDK
         id: setup-ndk
@@ -420,8 +433,21 @@ jobs:
       - name: Patch Flutter (dropdown filter)
         shell: bash
         run: |
+          set -euo pipefail
           cd "$(dirname "$(dirname "$(which flutter)")")"
-          git apply "$GITHUB_WORKSPACE/src/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          PATCH="$GITHUB_WORKSPACE/src/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          # subosito/flutter-action caches the SDK *including our edit*, so on a cache hit the
+          # patch is already in place and a bare `git apply` dies with "patch does not apply".
+          if git apply --check "$PATCH" 2>/dev/null; then
+            git apply "$PATCH"
+            echo "dropdown filter patch applied"
+          elif git apply --reverse --check "$PATCH" 2>/dev/null; then
+            echo "dropdown filter patch already present (restored from the Flutter cache)"
+          else
+            echo "::error::patch neither applies nor is already applied — the Flutter SDK moved"
+            git apply --check -v "$PATCH" || true
+            exit 1
+          fi
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
