@@ -24,6 +24,13 @@ import re
 import shutil
 import sys
 
+# Windows runners default stdout to cp1252, which cannot encode the app name. Force UTF-8.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 # --------------------------------------------------------------------------------------
 # Build parameters.
 #
@@ -122,7 +129,9 @@ class Patcher:
         p = self.path(rel)
         if not p.is_file():
             raise SystemExit(f"[FAIL] missing file: {p}")
-        return p.read_text(encoding="utf-8")
+        # Normalise CRLF: Windows checkouts may have autocrlf enabled, and every anchor
+        # below is written with plain \n.
+        return p.read_text(encoding="utf-8").replace("\r\n", "\n")
 
     def _write(self, rel: str, text: str) -> None:
         if self.dry_run:

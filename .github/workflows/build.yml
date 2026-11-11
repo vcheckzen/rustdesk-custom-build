@@ -56,6 +56,9 @@ env:
   LLVM_VERSION: "15.0.6"
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
 
+  # Windows runners default to cp1252; the patcher prints a non-ASCII app name.
+  PYTHONIOENCODING: "utf-8"
+
   # Build configuration: dispatch input > repository secret > repository variable > placeholder.
   # Nothing here is committed; the repo only ever contains placeholders.
   RD_APP_ID: ${{ inputs.app_id || secrets.RD_APP_ID || vars.RD_APP_ID || '' }}
