@@ -137,6 +137,13 @@ Next, add these repository secrets (Settings -> Secrets and variables -> Actions
   RD_PUB_KEY                  your hbbs public key
   RD_SITE_DOMAIN              your domain              (optional)
 
+Where the build output goes (this repo is PUBLIC, so its artifacts are not private):
+  ARTIFACTS_REPO              e.g. you/rustdesk-artifacts  <- a PRIVATE repo
+  ARTIFACTS_TOKEN             fine-grained PAT with Contents: read+write on it
+    ...or, instead of a second repo:
+  ARTIFACTS_PASSPHRASE        a long random string; artifact is AES-256 encrypted before upload
+  If neither is set, the build is uploaded in the clear and deleted after 1 day.
+
 Then: Actions -> Build custom RustDesk -> Run workflow (leave inputs empty to use the secrets).
 
 NOTE: release.keystore.b64 and tools/.keystore.env are gitignored. Keep a backup;

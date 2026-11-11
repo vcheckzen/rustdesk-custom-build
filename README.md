@@ -63,8 +63,58 @@ A new run cancels the previous one on the same branch (concurrency group `build-
 push never leaves two builds racing. Tick `allow_parallel` on a manual run when you deliberately
 want several builds side by side.
 
-Artifacts: `rustdesk-1.5.3-arm64-v8a.apk`, `rustdesk-1.5.3-windows-x64.zip`, plus a GitHub Release
-(unless `publish_release` is turned off).
+Artifacts: `rustdesk-1.5.3-arm64-v8a.apk` and `rustdesk-1.5.3-windows-x64.zip`. Where they land
+depends on the `ARTIFACTS_*` settings — see below.
+
+## Keeping build output private
+
+GitHub has **no per-user permission on workflow artifacts**. The docs are explicit: *"People who
+are signed into GitHub and have read access to a repository can download workflow artifacts."* On
+a public repo, read access means everyone, so an artifact uploaded here **cannot** be made
+private in place. Three options, in order of preference:
+
+| Option | Setup | Who can download |
+|---|---|---|
+| **1. Private companion repo** | `ARTIFACTS_REPO` + `ARTIFACTS_TOKEN` | only accounts with read access to that private repo — i.e. you |
+| **2. Encrypted artifact** | `ARTIFACTS_PASSPHRASE` only | anyone can fetch the blob, but only you can decrypt it |
+| 3. Nothing configured | — | anyone with a GitHub account; auto-deleted after 1 day |
+
+Nothing is ever attached to *this* repo's releases — the old `release` job is gone and the
+workflow only has `contents: read`.
+
+**Option 1 (recommended).** Create an empty **private** repo, e.g. `you/rustdesk-artifacts`, then
+create a fine-grained PAT scoped to it with **Contents: Read and write**, and store both as
+secrets here:
+
+```bash
+# Settings -> Secrets and variables -> Actions -> New repository secret
+ARTIFACTS_REPO   = you/rustdesk-artifacts
+ARTIFACTS_TOKEN  = github_pat_...
+```
+
+Each build then appears as a release tagged `build-<run_number>` in that private repo. `gh` is
+preinstalled on the runners, so nothing else is needed.
+
+**Option 2 (no second repo).** Store a long random passphrase instead:
+
+```bash
+ARTIFACTS_PASSPHRASE = <64+ random chars>
+```
+
+The workflow runs `openssl enc -aes-256-cbc -pbkdf2 -salt` before upload, keeps it 3 days, and
+prints the decrypt command in the log. Download and run:
+
+```bash
+openssl enc -d -aes-256-cbc -pbkdf2 -in rustdesk-1.5.3-windows-x64.zip.enc \
+                                -out rustdesk-1.5.3-windows-x64.zip
+```
+
+The blob is still publicly fetchable — it is just useless without the passphrase. Use option 1 if
+"only I can download" must be literally true.
+
+> The third option is a convenience for a first smoke test. Never leave it in place: a configured
+> build embeds your server address and public key.
+
 
 ## Configuration — nothing real is ever committed
 
@@ -101,9 +151,10 @@ Then run **Actions → Build custom RustDesk → Run workflow** and leave the in
 public run log; secrets are masked. `apply.py` also refuses values that do not match a strict
 per-field pattern, so an input can never break out of the Rust string literal it is spliced into.
 
-**Release exposure.** A configured build embeds the server address, so publishing it as a public
-Release makes that address public. Set `publish_release: false` to keep the build in private
-artifacts only.
+**Release exposure.** A configured build embeds the server address and public key, so it must
+never be published publicly. The workflow therefore never creates a release in this repo; set
+`ARTIFACTS_REPO` (private) or `ARTIFACTS_PASSPHRASE`, or tick `publish_release: false` to skip
+publishing entirely.
 
 Values still persist to `RustDesk2.toml` and can be changed in-app at any time:
 **Settings → ID/Relay Server** (ID server, relay, API server, key).
@@ -150,7 +201,7 @@ connection *not* preceded by that line means a code path bypassed `get_socks()`.
 patches/apply.py            anchor-based, idempotent patcher (fails loudly on drift)
 patches/baidu_tunnel.rs     local CONNECT shim -> Baidu front proxy
 .github/actions/gen-bridge  regenerates flutter_rust_bridge glue (not committed upstream)
-.github/workflows/build.yml android + windows + release
+.github/workflows/build.yml android + windows (no public release job)
 tools/ght.sh                gh wrapper (token from ght.txt, never on argv)
 tools/askpass.sh            GIT_ASKPASS helper
 tools/bootstrap.sh          repo + keystore + secrets

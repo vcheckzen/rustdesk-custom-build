@@ -32,7 +32,7 @@ on:
         required: false
         default: ""
       publish_release:
-        description: "Publish a GitHub Release. Turn off to keep a configured build private (artifacts still uploaded)."
+        description: "Publish the build at all. Goes to ARTIFACTS_REPO (private) if set, else an encrypted or plain artifact."
         type: boolean
         required: false
         default: true
@@ -50,7 +50,8 @@ concurrency:
   group: build-${{ github.ref }}-${{ inputs.allow_parallel && github.run_id || 'single' }}
   cancel-in-progress: ${{ !inputs.allow_parallel }}
 
-# Least privilege by default; only the release job elevates.
+# Least privilege by default, and nothing here ever elevates: builds are never written back to
+# this repo. See the ARTIFACTS_* env block for where they go instead.
 permissions:
   contents: read
 
@@ -69,6 +70,25 @@ env:
 
   # Windows runners default to cp1252; the patcher prints a non-ASCII app name.
   PYTHONIOENCODING: "utf-8"
+
+  # ---------------------------------------------------------------------------------------
+  # Where build output goes. GitHub has no per-user ACL on workflow artifacts: the docs say
+  # "People who are signed into GitHub and have read access to a repository can download
+  # workflow artifacts", and on a PUBLIC repo read access means everyone. So artifacts cannot
+  # be made private in place. Two supported ways to keep them to yourself:
+  #
+  #   1. ARTIFACTS_REPO  = "you/rustdesk-artifacts" (a PRIVATE repo)  + ARTIFACTS_TOKEN
+  #      A PAT with Contents: read+write on that repo. Builds land there as release assets.
+  #      Truly access-controlled: only accounts with read access can download.
+  #   2. ARTIFACTS_PASSPHRASE = a long random string (used when ARTIFACTS_REPO is unset)
+  #      The artifact is uploaded to this repo but AES-256 encrypted first. Anyone can
+  #      download the blob; only you can open it.
+  #
+  # If neither is set the build is uploaded in the clear, downloadable by any GitHub account,
+  # and kept for one day only.
+  # ---------------------------------------------------------------------------------------
+  ARTIFACTS_REPO: ${{ secrets.ARTIFACTS_REPO || vars.ARTIFACTS_REPO || '' }}
+  ARTIFACTS_PASSPHRASE: ${{ secrets.ARTIFACTS_PASSPHRASE || vars.ARTIFACTS_PASSPHRASE || '' }}
 
   # Build configuration: dispatch input > repository secret > repository variable > placeholder.
   # Nothing here is committed; the repo only ever contains placeholders.
@@ -233,12 +253,52 @@ jobs:
           "$AAPT" dump packagename "$APK" | grep -qx "im.logi.rd"
           echo "package name verified: im.logi.rd"
 
-      - name: Upload APK
+      # Tier 1: private companion repo (recommended, truly access-controlled).
+      - name: Publish APK to private artifacts repo
+        if: ${{ inputs.publish_release != false && env.ARTIFACTS_REPO != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACTS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::ARTIFACTS_REPO is set but ARTIFACTS_TOKEN is empty, so nothing can be published. Add a PAT with Contents: read+write on $ARTIFACTS_REPO."
+            exit 1
+          fi
+          TAG="build-${{ github.run_number }}"
+          gh release view "$TAG" --repo "$ARTIFACTS_REPO" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$ARTIFACTS_REPO" \
+                 --title "RustDesk custom build #${{ github.run_number }}" \
+                 --notes "source ${{ github.repository }}@${{ github.sha }}" || true
+          gh release upload "$TAG" "rustdesk-${{ env.VERSION }}-arm64-v8a.apk" \
+            --repo "$ARTIFACTS_REPO" --clobber
+          echo "published to https://github.com/$ARTIFACTS_REPO/releases/tag/$TAG"
+
+      # Tier 2/3: no private repo, so it has to live in this repo's artifact storage.
+      # Encrypted when ARTIFACTS_PASSPHRASE is set, otherwise plain and public.
+      - name: Prepare workflow artifact
+        id: artifact
+        if: ${{ inputs.publish_release != false && env.ARTIFACTS_REPO == '' }}
+        run: |
+          set -euo pipefail
+          F="rustdesk-${{ env.VERSION }}-arm64-v8a.apk"
+          if [ -n "${ARTIFACTS_PASSPHRASE:-}" ]; then
+            openssl enc -aes-256-cbc -pbkdf2 -salt -in "$F" -out "$F.enc" -pass env:ARTIFACTS_PASSPHRASE
+            echo "path=$F.enc" >> "$GITHUB_OUTPUT"
+            echo "::notice::Encrypted with AES-256. Decrypt with: openssl enc -d -aes-256-cbc -pbkdf2 -in $F.enc -out $F"
+          else
+            echo "path=$F" >> "$GITHUB_OUTPUT"
+            echo "::warning::Neither ARTIFACTS_REPO nor ARTIFACTS_PASSPHRASE is set, so this APK is downloadable by anyone with a GitHub account. It will be deleted after 1 day."
+          fi
+
+      - name: Upload workflow artifact
+        if: ${{ inputs.publish_release != false && env.ARTIFACTS_REPO == '' }}
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: rustdesk-${{ env.VERSION }}-arm64-v8a.apk
+          path: ${{ steps.artifact.outputs.path }}
           if-no-files-found: error
+          # Encrypted blobs are safe to keep longer than plaintext ones.
+          retention-days: ${{ env.ARTIFACTS_PASSPHRASE != '' && 3 || 1 }}
 
   # ---------------------------------------------------------------------------------------
   windows:
@@ -360,42 +420,49 @@ jobs:
         run: |
           Compress-Archive -Path ./rustdesk -DestinationPath "$env:GITHUB_WORKSPACE/rustdesk-${{ env.VERSION }}-windows-x64.zip" -Force
 
-      - name: Upload Windows build
+      # Tier 1: private companion repo (recommended, truly access-controlled).
+      - name: Publish build to private artifacts repo
+        if: ${{ inputs.publish_release != false && env.ARTIFACTS_REPO != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACTS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::ARTIFACTS_REPO is set but ARTIFACTS_TOKEN is empty, so nothing can be published. Add a PAT with Contents: read+write on $ARTIFACTS_REPO."
+            exit 1
+          fi
+          TAG="build-${{ github.run_number }}"
+          gh release view "$TAG" --repo "$ARTIFACTS_REPO" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$ARTIFACTS_REPO" \
+                 --title "RustDesk custom build #${{ github.run_number }}" \
+                 --notes "source ${{ github.repository }}@${{ github.sha }}" || true
+          gh release upload "$TAG" "rustdesk-${{ env.VERSION }}-windows-x64.zip" \
+            --repo "$ARTIFACTS_REPO" --clobber
+          echo "published to https://github.com/$ARTIFACTS_REPO/releases/tag/$TAG"
+
+      # Tier 2/3: no private repo, so it has to live in this repo's artifact storage.
+      - name: Prepare workflow artifact
+        id: artifact
+        if: ${{ inputs.publish_release != false && env.ARTIFACTS_REPO == '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          F="rustdesk-${{ env.VERSION }}-windows-x64.zip"
+          if [ -n "${ARTIFACTS_PASSPHRASE:-}" ]; then
+            openssl enc -aes-256-cbc -pbkdf2 -salt -in "$F" -out "$F.enc" -pass env:ARTIFACTS_PASSPHRASE
+            echo "path=$F.enc" >> "$GITHUB_OUTPUT"
+            echo "::notice::Encrypted with AES-256. Decrypt with: openssl enc -d -aes-256-cbc -pbkdf2 -in $F.enc -out $F"
+          else
+            echo "path=$F" >> "$GITHUB_OUTPUT"
+            echo "::warning::Neither ARTIFACTS_REPO nor ARTIFACTS_PASSPHRASE is set, so this build is downloadable by anyone with a GitHub account. It will be deleted after 1 day."
+          fi
+
+      - name: Upload workflow artifact
+        if: ${{ inputs.publish_release != false && env.ARTIFACTS_REPO == '' }}
         uses: actions/upload-artifact@v4
         with:
           name: windows-portable
-          path: rustdesk-${{ env.VERSION }}-windows-x64.zip
+          path: ${{ steps.artifact.outputs.path }}
           if-no-files-found: error
-
-  # ---------------------------------------------------------------------------------------
-  release:
-    name: Publish release
-    needs: [android, windows]
-    # Only a manual run that explicitly asks for it publishes; a plain push never does.
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release != false }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: List
-        run: ls -lh dist
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ env.VERSION }}-custom.${{ github.run_number }}
-          name: RustDesk ${{ env.VERSION }} custom (build ${{ github.run_number }})
-          body: |
-            Custom RustDesk build.
-            - Android package: `im.logi.rd`
-            - All outbound TCP tunnelled through the Baidu front proxy
-            - Server is configured at runtime: Settings -> ID/Relay Server
-          files: dist/*
-          draft: false
-          fail_on_unmatched_files: true
+          retention-days: ${{ env.ARTIFACTS_PASSPHRASE != '' && 3 || 1 }}
