@@ -222,6 +222,10 @@ jobs:
           mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
           cp ./target/aarch64-linux-android/release/liblibrustdesk.so \
              ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+          # Rust links the C++ runtime dynamically on Android; without this the APK builds
+          # but dies at startup with "library libc++_shared.so not found".
+          cp "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
+             ./flutter/android/app/src/main/jniLibs/arm64-v8a/
 
       - name: Configure Android signing
         env:
@@ -243,8 +247,22 @@ jobs:
           fi
 
       - name: Build APK
-        working-directory: src
+        # `flutter build apk` resolves pubspec.yaml from the CWD, and the Flutter project lives
+        # in src/flutter, not in src. Running it from src fails with "No pubspec.yaml file found".
+        working-directory: src/flutter
         run: |
+          set -euo pipefail
+          export JAVA_HOME="${JAVA_HOME_17_X64:-/usr/lib/jvm/java-17-openjdk-amd64}"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          java -version 2>&1 | head -1
+
+          # The default 1 GB Gradle heap is not enough for the release R8 pass.
+          if grep -q '^org.gradle.jvmargs=' ./android/gradle.properties; then
+            sed -i -E 's|^org\.gradle\.jvmargs=.*|org.gradle.jvmargs=-Xmx2g|' ./android/gradle.properties
+          else
+            echo 'org.gradle.jvmargs=-Xmx2g' >> ./android/gradle.properties
+          fi
+
           flutter build apk --release --target-platform android-arm64 --split-per-abi
           cp ./build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
              "$GITHUB_WORKSPACE/rustdesk-${{ env.VERSION }}-arm64-v8a.apk"
