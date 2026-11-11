@@ -36,8 +36,19 @@ on:
         type: boolean
         required: false
         default: true
+      allow_parallel:
+        description: "Keep other in-flight runs alive. Off = a new run cancels the previous one on the same branch."
+        type: boolean
+        required: false
+        default: false
   push:
     branches: [main, master]
+
+# One build per branch: a new push cancels the stale run instead of burning a second
+# set of runners. Tick `allow_parallel` on a manual run to deliberately build side by side.
+concurrency:
+  group: build-${{ github.ref }}-${{ inputs.allow_parallel && github.run_id || 'single' }}
+  cancel-in-progress: ${{ !inputs.allow_parallel }}
 
 # Least privilege by default; only the release job elevates.
 permissions:
@@ -274,13 +285,19 @@ jobs:
       - name: Replace Flutter engine with RustDesk's patched engine
         shell: pwsh
         run: |
+          $flutterRoot = Split-Path -Parent (Split-Path -Parent (Get-Command flutter).Source)
+          Write-Host "flutter root: $flutterRoot"
           flutter doctor -v
           flutter precache --windows
           Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
           Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
-          $dest = "C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/"
-          if (-not (Test-Path $dest)) { throw "engine dir not found: $dest" }
+          $dest = Join-Path $flutterRoot "bin/cache/artifacts/engine/windows-x64-release"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
           Copy-Item -Force -Recurse "windows-x64-release/*" $dest
+          if (-not (Test-Path (Join-Path $dest "flutter_windows.dll"))) {
+            throw "engine replacement failed, flutter_windows.dll missing in $dest"
+          }
+          Write-Host "engine replaced in $dest"
 
       - name: Patch Flutter (dropdown filter)
         shell: bash

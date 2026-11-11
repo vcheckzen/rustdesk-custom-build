@@ -59,6 +59,10 @@ The script refuses to commit if anything matching `ght.txt`, `*.keystore`, `*.jk
 Then set the `RD_*` secrets (see below) and either push to `main` or run
 **Actions → Build custom RustDesk → Run workflow**.
 
+A new run cancels the previous one on the same branch (concurrency group `build-<ref>`), so a
+push never leaves two builds racing. Tick `allow_parallel` on a manual run when you deliberately
+want several builds side by side.
+
 Artifacts: `rustdesk-1.5.3-arm64-v8a.apk`, `rustdesk-1.5.3-windows-x64.zip`, plus a GitHub Release
 (unless `publish_release` is turned off).
 
