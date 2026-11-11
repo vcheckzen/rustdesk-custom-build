@@ -314,7 +314,20 @@ jobs:
   windows:
     name: Windows (x64)
     runs-on: windows-2022
+    env:
+      # vcpkg binary caching through the Actions cache. Without it ffmpeg / libvpx / opus /
+      # aom / libyuv / mfx-dispatch are all compiled from source, which is hours on a 2-core
+      # runner. The x-gha provider needs ACTIONS_CACHE_URL + ACTIONS_RUNTIME_TOKEN, which
+      # Actions does not put in the job env on its own (see the export step below).
+      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
     steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
       - name: Checkout builder
         uses: actions/checkout@v4
 
@@ -407,14 +420,20 @@ jobs:
 
       - name: Install vcpkg dependencies
         shell: bash
+        # vcpkg runs in MANIFEST mode: with no package arguments it reads `vcpkg.json` from the
+        # current directory, and that file (plus the `res/vcpkg` overlay ports it points at)
+        # lives in the RustDesk source tree, not in this builder repo. Wrong cwd => vcpkg prints
+        # its usage and exits 1.
+        working-directory: src
         env:
           VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
         run: |
           set -euo pipefail
           if ! "$VCPKG_ROOT/vcpkg" install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"; then
-            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do echo "== $f"; cat "$f"; done
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r f; do echo "== $f"; tail -n 80 "$f"; done
             exit 1
           fi
+          echo "installed:"; ls "$VCPKG_ROOT/installed/x64-windows-static/lib" 2>/dev/null | head -20 || true
 
       - name: Generate flutter-rust-bridge
         uses: ./.github/actions/gen-bridge
