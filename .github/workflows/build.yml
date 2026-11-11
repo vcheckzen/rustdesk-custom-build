@@ -114,12 +114,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bad=$(git ls-files | grep -Ei '(^|/)ght\.txt$|\.keystore$|\.jks$|keystore\.env$|(^|/)key\.properties$' || true)
+          bad=$(git ls-files | grep -Ei '(^|/)ght\.txt$|ARTIFACTS_PASSPHRASE|\.passphrase$|\.keystore$|\.jks$|keystore\.env$|(^|/)key\.properties$' || true)
           if [ -n "$bad" ]; then
             echo "::error::secret material is tracked in this repo: $bad"
             exit 1
           fi
           echo "no secret files tracked"
+
+          # Report where this build will go, at minute one rather than after a 40-minute build.
+          # Only the mode is printed, never a value.
+          if [ -n "${ARTIFACTS_REPO:-}" ]; then
+            echo "publish mode: private artifacts repo"
+          elif [ -n "${ARTIFACTS_PASSPHRASE:-}" ]; then
+            echo "publish mode: AES-256 encrypted workflow artifact"
+          else
+            echo "::warning::publish mode: PLAIN public artifact (set ARTIFACTS_REPO or ARTIFACTS_PASSPHRASE)"
+          fi
 
       - name: Checkout upstream RustDesk
         uses: actions/checkout@v4
@@ -282,9 +292,9 @@ jobs:
           set -euo pipefail
           F="rustdesk-${{ env.VERSION }}-arm64-v8a.apk"
           if [ -n "${ARTIFACTS_PASSPHRASE:-}" ]; then
-            openssl enc -aes-256-cbc -pbkdf2 -salt -in "$F" -out "$F.enc" -pass env:ARTIFACTS_PASSPHRASE
+            openssl enc -aes-256-cbc -pbkdf2 -md sha256 -salt -in "$F" -out "$F.enc" -pass env:ARTIFACTS_PASSPHRASE
             echo "path=$F.enc" >> "$GITHUB_OUTPUT"
-            echo "::notice::Encrypted with AES-256. Decrypt with: openssl enc -d -aes-256-cbc -pbkdf2 -in $F.enc -out $F"
+            echo "::notice::Encrypted with AES-256. Decrypt with: openssl enc -d -aes-256-cbc -pbkdf2 -md sha256 -in $F.enc -out $F"
           else
             echo "path=$F" >> "$GITHUB_OUTPUT"
             echo "::warning::Neither ARTIFACTS_REPO nor ARTIFACTS_PASSPHRASE is set, so this APK is downloadable by anyone with a GitHub account. It will be deleted after 1 day."
@@ -312,12 +322,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bad=$(git ls-files | grep -Ei '(^|/)ght\.txt$|\.keystore$|\.jks$|keystore\.env$|(^|/)key\.properties$' || true)
+          bad=$(git ls-files | grep -Ei '(^|/)ght\.txt$|ARTIFACTS_PASSPHRASE|\.passphrase$|\.keystore$|\.jks$|keystore\.env$|(^|/)key\.properties$' || true)
           if [ -n "$bad" ]; then
             echo "::error::secret material is tracked in this repo: $bad"
             exit 1
           fi
           echo "no secret files tracked"
+
+          # Report where this build will go, at minute one rather than after a 40-minute build.
+          # Only the mode is printed, never a value.
+          if [ -n "${ARTIFACTS_REPO:-}" ]; then
+            echo "publish mode: private artifacts repo"
+          elif [ -n "${ARTIFACTS_PASSPHRASE:-}" ]; then
+            echo "publish mode: AES-256 encrypted workflow artifact"
+          else
+            echo "::warning::publish mode: PLAIN public artifact (set ARTIFACTS_REPO or ARTIFACTS_PASSPHRASE)"
+          fi
 
       - name: Checkout upstream RustDesk
         uses: actions/checkout@v4
@@ -450,9 +470,9 @@ jobs:
           set -euo pipefail
           F="rustdesk-${{ env.VERSION }}-windows-x64.zip"
           if [ -n "${ARTIFACTS_PASSPHRASE:-}" ]; then
-            openssl enc -aes-256-cbc -pbkdf2 -salt -in "$F" -out "$F.enc" -pass env:ARTIFACTS_PASSPHRASE
+            openssl enc -aes-256-cbc -pbkdf2 -md sha256 -salt -in "$F" -out "$F.enc" -pass env:ARTIFACTS_PASSPHRASE
             echo "path=$F.enc" >> "$GITHUB_OUTPUT"
-            echo "::notice::Encrypted with AES-256. Decrypt with: openssl enc -d -aes-256-cbc -pbkdf2 -in $F.enc -out $F"
+            echo "::notice::Encrypted with AES-256. Decrypt with: openssl enc -d -aes-256-cbc -pbkdf2 -md sha256 -in $F.enc -out $F"
           else
             echo "path=$F" >> "$GITHUB_OUTPUT"
             echo "::warning::Neither ARTIFACTS_REPO nor ARTIFACTS_PASSPHRASE is set, so this build is downloadable by anyone with a GitHub account. It will be deleted after 1 day."

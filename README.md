@@ -101,13 +101,17 @@ preinstalled on the runners, so nothing else is needed.
 ARTIFACTS_PASSPHRASE = <64+ random chars>
 ```
 
-The workflow runs `openssl enc -aes-256-cbc -pbkdf2 -salt` before upload, keeps it 3 days, and
-prints the decrypt command in the log. Download and run:
+The workflow runs `openssl enc -aes-256-cbc -pbkdf2 -md sha256 -salt` before upload, keeps it 3
+days, and prints the decrypt command in the log. Download and run:
 
 ```bash
-openssl enc -d -aes-256-cbc -pbkdf2 -in rustdesk-1.5.3-windows-x64.zip.enc \
-                                -out rustdesk-1.5.3-windows-x64.zip
+openssl enc -d -aes-256-cbc -pbkdf2 -md sha256 -in rustdesk-1.5.3-windows-x64.zip.enc \
+                                                -out rustdesk-1.5.3-windows-x64.zip
 ```
+
+Keep a local copy of the passphrase in `ARTIFACTS_PASSPHRASE.txt` — it is gitignored, and losing
+it means the artifacts are unrecoverable. Any printable ASCII with no spaces or quotes works; the
+workflow passes it via the environment, never on a command line.
 
 The blob is still publicly fetchable — it is just useless without the passphrase. Use option 1 if
 "only I can download" must be literally true.

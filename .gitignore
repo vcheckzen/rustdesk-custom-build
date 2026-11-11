@@ -1,5 +1,7 @@
 # ---- secrets: never commit, never track ----
 ght.txt
+ARTIFACTS_PASSPHRASE*
+*.passphrase
 tools/.keystore.env
 *.keystore
 *.keystore.b64
