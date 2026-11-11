@@ -167,28 +167,14 @@ class Patcher:
         self.changed += 1
         print(f"[ok]   {rel} (new file)")
 
-    def replace_domain_tree(self, dirs, needle="rustdesk.com", repl="rd.example.com") -> None:
-        suffixes = {".rs", ".dart", ".kt", ".java", ".xml", ".gradle", ".kts", ".json", ".sh", ".py"}
-        for d in dirs:
-            base = self.path(d)
-            if not base.is_dir():
-                continue
-            for f in base.rglob("*"):
-                if not f.is_file() or f.suffix not in suffixes:
-                    continue
-                try:
-                    text = f.read_text(encoding="utf-8")
-                except (UnicodeDecodeError, OSError):
-                    continue
-                if needle not in text:
-                    continue
-                if not self.dry_run:
-                    f.write_text(text.replace(needle, repl), encoding="utf-8", newline="")
-                self.changed += 1
-                print(f"[ok]   {f.relative_to(self.root)}: {needle} -> {repl}")
+    SKIP_DIRS = {".git", "target", "build", "node_modules", ".dart_tool", ".gradle"}
+    SKIP_SUFFIXES = {
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".svgz",
+        ".so", ".dll", ".dylib", ".a", ".lib", ".exe", ".msi", ".zip", ".gz",
+        ".woff", ".woff2", ".ttf", ".otf", ".pdf", ".bin", ".rlib", ".o",
+    }
 
-    def gate(self, dirs, banned) -> None:
-        hits = []
+    def iter_text_files(self, dirs):
         for d in dirs:
             base = self.path(d)
             if not base.is_dir():
@@ -196,13 +182,35 @@ class Patcher:
             for f in base.rglob("*"):
                 if not f.is_file():
                     continue
+                if f.suffix.lower() in self.SKIP_SUFFIXES:
+                    continue
+                if any(part in self.SKIP_DIRS for part in f.relative_to(base).parts):
+                    continue
                 try:
+                    if f.stat().st_size > 4 * 1024 * 1024:
+                        continue
                     text = f.read_text(encoding="utf-8")
                 except (UnicodeDecodeError, OSError):
                     continue
-                for word in banned:
-                    if word in text:
-                        hits.append(f"{f.relative_to(self.root)}: {word}")
+                yield f, text
+
+    def replace_domain_tree(self, dirs, needle="rustdesk.com", repl="rd.example.com") -> None:
+        # Scan every text file rather than a suffix allowlist: the first CI run missed
+        # `src/ui/*.tis` and the gate caught it.
+        for f, text in self.iter_text_files(dirs):
+            if needle not in text:
+                continue
+            if not self.dry_run:
+                f.write_text(text.replace(needle, repl), encoding="utf-8", newline="")
+            self.changed += 1
+            print(f"[ok]   {f.relative_to(self.root)}: {needle} -> {repl}")
+
+    def gate(self, dirs, banned) -> None:
+        hits = []
+        for f, text in self.iter_text_files(dirs):
+            for word in banned:
+                if word in text:
+                    hits.append(f"{f.relative_to(self.root)}: {word}")
         if hits:
             print("\n[FAIL] forbidden strings survived patching:", file=sys.stderr)
             for h in hits:

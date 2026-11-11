@@ -351,7 +351,8 @@ jobs:
   release:
     name: Publish release
     needs: [android, windows]
-    if: ${{ inputs.publish_release != false }}
+    # Only a manual run that explicitly asks for it publishes; a plain push never does.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release != false }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
