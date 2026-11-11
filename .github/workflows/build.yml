@@ -90,6 +90,13 @@ env:
   ARTIFACTS_REPO: ${{ secrets.ARTIFACTS_REPO || vars.ARTIFACTS_REPO || '' }}
   ARTIFACTS_PASSPHRASE: ${{ secrets.ARTIFACTS_PASSPHRASE || vars.ARTIFACTS_PASSPHRASE || '' }}
 
+  # Whether to publish at all. This looks over-engineered because it has to be: on a `push`
+  # event there is no `inputs` context, so `inputs.publish_release` is null, and GitHub's
+  # loose equality coerces null to 0 and false to 0 — meaning `null == false` is TRUE and a
+  # naive `inputs.publish_release != false` evaluates to false, silently skipping every
+  # publish step on push builds.
+  PUBLISH: ${{ github.event_name != 'workflow_dispatch' || inputs.publish_release != false }}
+
   # Build configuration: dispatch input > repository secret > repository variable > placeholder.
   # Nothing here is committed; the repo only ever contains placeholders.
   RD_APP_ID: ${{ inputs.app_id || secrets.RD_APP_ID || vars.RD_APP_ID || '' }}
@@ -283,7 +290,7 @@ jobs:
 
       # Tier 1: private companion repo (recommended, truly access-controlled).
       - name: Publish APK to private artifacts repo
-        if: ${{ inputs.publish_release != false && env.ARTIFACTS_REPO != '' }}
+        if: ${{ env.PUBLISH == 'true' && env.ARTIFACTS_REPO != '' }}
         env:
           GH_TOKEN: ${{ secrets.ARTIFACTS_TOKEN }}
         run: |
@@ -305,7 +312,7 @@ jobs:
       # Encrypted when ARTIFACTS_PASSPHRASE is set, otherwise plain and public.
       - name: Prepare workflow artifact
         id: artifact
-        if: ${{ inputs.publish_release != false && env.ARTIFACTS_REPO == '' }}
+        if: ${{ env.PUBLISH == 'true' && env.ARTIFACTS_REPO == '' }}
         run: |
           set -euo pipefail
           F="rustdesk-${{ env.VERSION }}-arm64-v8a.apk"
@@ -319,7 +326,7 @@ jobs:
           fi
 
       - name: Upload workflow artifact
-        if: ${{ inputs.publish_release != false && env.ARTIFACTS_REPO == '' }}
+        if: ${{ env.PUBLISH == 'true' && env.ARTIFACTS_REPO == '' }}
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
@@ -479,7 +486,7 @@ jobs:
 
       # Tier 1: private companion repo (recommended, truly access-controlled).
       - name: Publish build to private artifacts repo
-        if: ${{ inputs.publish_release != false && env.ARTIFACTS_REPO != '' }}
+        if: ${{ env.PUBLISH == 'true' && env.ARTIFACTS_REPO != '' }}
         env:
           GH_TOKEN: ${{ secrets.ARTIFACTS_TOKEN }}
         shell: bash
@@ -501,7 +508,7 @@ jobs:
       # Tier 2/3: no private repo, so it has to live in this repo's artifact storage.
       - name: Prepare workflow artifact
         id: artifact
-        if: ${{ inputs.publish_release != false && env.ARTIFACTS_REPO == '' }}
+        if: ${{ env.PUBLISH == 'true' && env.ARTIFACTS_REPO == '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -516,7 +523,7 @@ jobs:
           fi
 
       - name: Upload workflow artifact
-        if: ${{ inputs.publish_release != false && env.ARTIFACTS_REPO == '' }}
+        if: ${{ env.PUBLISH == 'true' && env.ARTIFACTS_REPO == '' }}
         uses: actions/upload-artifact@v4
         with:
           name: windows-portable
