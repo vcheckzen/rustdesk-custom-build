@@ -47,14 +47,49 @@ User-Agent: okhttp/3.11.0 Dalvik/2.1.0 (...) baiduboxapp/11.0.5.12 (Baidu; P1 11
 Proxy-Connection: keep-alive
 ```
 
+## Local secrets — one file, one door
+
+Every credential lives in **one** gitignored file, `secrets/secrets.env`. Nothing else in the repo
+holds a secret, and no script knows a path: `tools/ght.sh`, `tools/askpass.sh` and
+`tools/bootstrap.sh` all go through `tools/secrets.sh`, which is the only reader.
+
+```bash
+./tools/secrets.sh init        # secrets/secrets.env from tools/secrets.env.template
+$EDITOR secrets/secrets.env    # fill in the values
+./tools/secrets.sh check       # validate: format, required keys, gitignore, value shapes
+./tools/secrets.sh status      # KEY / set|empty / length / flags — never a value
+```
+
+The committed template `tools/secrets.env.template` is the documentation: every key, why it
+exists, how to get it, and the annotation that drives validation (`@required`, `@optional`,
+`@required-if KEY`, `@derived`, `@local`). CI fails if a tracked file under `secrets/` appears or
+if the template ever carries a value for a secret key.
+
+Values are printed only by `get` (for command substitution) and `run` (into a child environment).
+Everything else reports state and length. The store is parsed as data, never sourced, so a stray
+line cannot execute anything.
+
+```bash
+TOKEN="$(./tools/secrets.sh get GH_TOKEN)"          # one value
+./tools/secrets.sh run -- gh pr list                # whole environment
+printf '%s' "$new" | ./tools/secrets.sh set RD_PUB_KEY   # value via stdin, never argv
+./tools/secrets.sh fingerprint RD_PUB_KEY           # sha256[:12] + length, to compare without exposing
+./tools/secrets.sh push                             # upload the CI secrets through gh
+```
+
+`secrets/` holds the Android signing keystore too (`secrets/keystore/release.keystore`).
+**Back it up somewhere outside the repo** — losing it means future APKs cannot upgrade the
+installed app.
+
 ## Build
 
 ```bash
 ./tools/bootstrap.sh            # creates a PUBLIC repo, pushes, generates keystore + secrets
 ```
 
-The script refuses to commit if anything matching `ght.txt`, `*.keystore`, `*.jks`,
-`keystore.env` or `key.properties` is staged.
+The script refuses to commit if anything matching `secrets/`, `ght.txt`, `*.keystore`, `*.jks`,
+`keystore.env` or `key.properties` is staged, and then probes the remote to confirm none of them
+was published.
 
 Then set the `RD_*` secrets (see below) and either push to `main` or run
 **Actions → Build custom RustDesk → Run workflow**.
@@ -109,9 +144,9 @@ openssl enc -d -aes-256-cbc -pbkdf2 -md sha256 -in rustdesk-1.5.3-windows-x64.zi
                                                 -out rustdesk-1.5.3-windows-x64.zip
 ```
 
-Keep a local copy of the passphrase in `ARTIFACTS_PASSPHRASE.txt` — it is gitignored, and losing
-it means the artifacts are unrecoverable. Any printable ASCII with no spaces or quotes works; the
-workflow passes it via the environment, never on a command line.
+Keep the passphrase in the central store (`ARTIFACTS_PASSPHRASE` in `secrets/secrets.env`) — it is
+gitignored, and losing it means the artifacts are unrecoverable. Any printable ASCII with no
+spaces or quotes works; the workflow passes it via the environment, never on a command line.
 
 The blob is still publicly fetchable — it is just useless without the passphrase. Use option 1 if
 "only I can download" must be literally true.
@@ -139,15 +174,16 @@ workflow_dispatch input  >  repository secret  >  repository variable  >  placeh
 | Public key | `pub_key` | `RD_PUB_KEY` | *(empty)* |
 | Domain replacement | `site_domain` | `RD_SITE_DOMAIN` | `rd.example.com` |
 
-Set the secrets once:
+Set them once in `secrets/secrets.env`, then upload:
 
 ```bash
-./tools/ght.sh secret set RD_ID_SERVER   --body "id.example.com"
-./tools/ght.sh secret set RD_RELAY_SERVER --body "relay.example.com"
-./tools/ght.sh secret set RD_API_SERVER  --body "https://api.example.com"
-./tools/ght.sh secret set RD_PUB_KEY     --body "your-hbbs-public-key"
-./tools/ght.sh secret set RD_SITE_DOMAIN --body "example.com"
+$EDITOR secrets/secrets.env      # fill RD_ID_SERVER, RD_PUB_KEY, ...
+./tools/secrets.sh check         # catches typos before a 40-minute build does
+./tools/secrets.sh push          # gh secret set for every non-local key
 ```
+
+No `gh`? Add them in **Settings → Secrets and variables → Actions → New repository secret**, using
+`./tools/secrets.sh status` to see which keys are still empty.
 
 Then run **Actions → Build custom RustDesk → Run workflow** and leave the inputs empty.
 
@@ -206,7 +242,10 @@ patches/apply.py            anchor-based, idempotent patcher (fails loudly on dr
 patches/baidu_tunnel.rs     local CONNECT shim -> Baidu front proxy
 .github/actions/gen-bridge  regenerates flutter_rust_bridge glue (not committed upstream)
 .github/workflows/build.yml android + windows (no public release job)
-tools/ght.sh                gh wrapper (token from ght.txt, never on argv)
-tools/askpass.sh            GIT_ASKPASS helper
+tools/secrets.sh            the only door to local credentials
+tools/secrets.env.template  every key + comment, no values (committed)
+secrets/                    the real store, gitignored (secrets.env + keystore/)
+tools/ght.sh                gh wrapper (token from the store, never on argv)
+tools/askpass.sh            GIT_ASKPASS helper (token from the store)
 tools/bootstrap.sh          repo + keystore + secrets
 ```

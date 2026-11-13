@@ -1,4 +1,11 @@
 # ---- secrets: never commit, never track ----
+# The single local secret store. Everything real lives in here; the committed
+# template tools/secrets.env.template carries the key names and the comments.
+secrets/
+*.env.local
+
+# legacy scattered secret files - superseded by secrets/, kept ignored so a
+# forgotten copy can never be committed
 ght.txt
 ARTIFACTS_PASSPHRASE*
 *.passphrase

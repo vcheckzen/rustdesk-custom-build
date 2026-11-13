@@ -121,12 +121,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bad=$(git ls-files | grep -Ei '(^|/)ght\.txt$|ARTIFACTS_PASSPHRASE|\.passphrase$|\.keystore$|\.jks$|keystore\.env$|(^|/)key\.properties$' || true)
+          # secrets/secrets.env is the local store; the committed template must stay value-free.
+          bad=$(git ls-files | grep -Ei '(^|/)secrets/|(^|/)ght\.txt$|ARTIFACTS_PASSPHRASE|\.passphrase$|\.keystore$|\.jks$|keystore\.env$|(^|/)key\.properties$' || true)
           if [ -n "$bad" ]; then
             echo "::error::secret material is tracked in this repo: $bad"
             exit 1
           fi
-          echo "no secret files tracked"
+          if grep -nE '^(GH_TOKEN|ARTIFACTS_TOKEN|ARTIFACTS_PASSPHRASE|ANDROID_KEYSTORE_B64|ANDROID_KEYSTORE_PASSWORD|ANDROID_KEY_PASSWORD|RD_PUB_KEY)=.+' tools/secrets.env.template; then
+            echo "::error::tools/secrets.env.template must never carry a secret value"
+            exit 1
+          fi
+          echo "no secret files tracked, template carries no secret value"
 
           # Report where this build will go, at minute one rather than after a 40-minute build.
           # Only the mode is printed, never a value.
@@ -373,12 +378,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bad=$(git ls-files | grep -Ei '(^|/)ght\.txt$|ARTIFACTS_PASSPHRASE|\.passphrase$|\.keystore$|\.jks$|keystore\.env$|(^|/)key\.properties$' || true)
+          # secrets/secrets.env is the local store; the committed template must stay value-free.
+          bad=$(git ls-files | grep -Ei '(^|/)secrets/|(^|/)ght\.txt$|ARTIFACTS_PASSPHRASE|\.passphrase$|\.keystore$|\.jks$|keystore\.env$|(^|/)key\.properties$' || true)
           if [ -n "$bad" ]; then
             echo "::error::secret material is tracked in this repo: $bad"
             exit 1
           fi
-          echo "no secret files tracked"
+          if grep -nE '^(GH_TOKEN|ARTIFACTS_TOKEN|ARTIFACTS_PASSPHRASE|ANDROID_KEYSTORE_B64|ANDROID_KEYSTORE_PASSWORD|ANDROID_KEY_PASSWORD|RD_PUB_KEY)=.+' tools/secrets.env.template; then
+            echo "::error::tools/secrets.env.template must never carry a secret value"
+            exit 1
+          fi
+          echo "no secret files tracked, template carries no secret value"
 
           # Report where this build will go, at minute one rather than after a 40-minute build.
           # Only the mode is printed, never a value.

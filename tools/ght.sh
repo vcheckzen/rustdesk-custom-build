@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
-# gh wrapper: loads the token from ght.txt into GH_TOKEN.
+# gh wrapper: takes GH_TOKEN from the central secret store.
 # The token is never echoed, never passed as an argument, never logged.
+#
+#   ./tools/ght.sh pr list
+#   ./tools/ght.sh secret set RD_ID_SERVER < value.txt
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-token_file="$here/../ght.txt"
-[[ -f "$token_file" ]] || { echo "ght.txt not found next to tools/" >&2; exit 1; }
-GH_TOKEN="$(tr -d '\r\n' < "$token_file")"
-[[ -n "$GH_TOKEN" ]] || { echo "ght.txt is empty" >&2; exit 1; }
+
+if ! command -v gh >/dev/null 2>&1; then
+  cat >&2 <<'MSG'
+gh is not installed, so this wrapper has nothing to run.
+
+Either install it (https://cli.github.com), or use the REST API directly:
+  ./tools/bootstrap.sh          creates the repo and pushes, no gh needed
+  ./tools/secrets.sh push       uploads the CI secrets, but also needs gh
+MSG
+  exit 127
+fi
+
+GH_TOKEN="$("$here/secrets.sh" get GH_TOKEN)"
 export GH_TOKEN
 exec gh "$@"
