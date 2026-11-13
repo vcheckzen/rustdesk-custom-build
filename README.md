@@ -12,12 +12,55 @@ workflow. CI checks out the upstream source at a pinned commit, patches it, and 
 | Area | Change |
 |---|---|
 | Android package | `applicationId` → `im.logi.rd` (namespace/JNI untouched, so nothing can break) |
-| App name | `远程协助` |
+| App name | `远程协助` — `strings.xml` **and** `AndroidManifest.xml`, which is where the launcher label actually comes from |
 | Server | injected at build time from dispatch inputs / secrets; placeholders otherwise. Always overridable at runtime via **Settings → ID/Relay Server** |
 | Official domains | every `rustdesk.com` in `src/`, `libs/`, `flutter/lib/`, `flutter/android/` rewritten; CI fails if any survive |
 | Public-server heuristics | `is_public()` / `using_public_server()` forced to `false` (also removes the 30 FPS cap from [rustdesk-api#403](https://github.com/lejianwen/rustdesk-api/issues/403)) |
-| Networking | `disable-udp=Y`, `force-always-relay=Y`, `baidu-proxy=Y` by default |
+| Networking | see the table below; `force-always-relay=Y` and `baidu-proxy=Y` on both platforms |
+| Access control | optional fixed password + baked TOTP secret (2FA); see **Access control** below |
 | Backdoor | any baked-in `HARD_SETTINGS` maintenance password is stripped (defensive) |
+
+### Default network options
+
+Set through `DEFAULT_SETTINGS`, so they are also the last-resort default for an install that has
+not saved its own value, and the UI switches reflect them on a fresh install.
+
+| Option | Windows | Android | Meaning |
+|---|---|---|---|
+| `disable-udp` | `Y` | `Y` | never use UDP |
+| `allow-websocket` | `Y` | `Y` | rendezvous and sessions over WebSocket |
+| `enable-tcp-punch` | — | `N` | no TCP hole punching |
+| `enable-udp-punch` | — | `N` | no UDP hole punching |
+| `enable-ipv6-punch` | — | `N` | no IPv6 P2P |
+| `enable-webrtc` | — | `N` | no WebRTC P2P |
+| `enable-check-update` | — | `N` | no update check at startup (`DEFAULT_LOCAL_SETTINGS`) |
+
+Note the key names: it is `enable-ipv6-punch` and `enable-webrtc`, not `…-p2p`. They are defined in
+`libs/base/src/config/keys.rs`, and the `enable-` prefix means *true unless `N`*, which is why
+disabling them writes `N`.
+
+### Access control
+
+Both values are optional; leave them empty and the build keeps stock behaviour.
+
+| Field | Secret | Effect |
+|---|---|---|
+| `permanent_password` | `RD_PERMANENT_PASSWORD` | baked as the preset password, and flips `verification-method=use-permanent-password` + `approve-mode=password`, i.e. only that password works and no click approval is offered |
+| `totp_secret` | `RD_2FA_SECRET` | base32 TOTP secret, enforced on every incoming connection |
+
+The password goes into `HARD_SETTINGS`, which is the only map
+`Config::get_preset_password_storage_and_salt()` reads; the plaintext form is the fork's supported
+legacy form and is migrated to salted storage on first use. `disable-change-permanent-password` is
+deliberately **not** set, so the in-app password can still be changed as an escape hatch.
+
+The 2FA stored form cannot be precomputed — it is secretbox-encrypted with each device's uuid — so
+the raw base32 secret is compiled in and used directly, and the UI's QR code shows the same secret.
+Check it from the shell with `./tools/secrets.sh totp`; get the URL for your authenticator with
+`./tools/secrets.sh totp-uri`.
+
+> Both are **in the binary**. Anyone who has the APK can extract them; that is inherent to a baked
+> password, not a bug. Keep the artifacts private (see below).
+
 
 ## How the proxy is wired
 
@@ -173,6 +216,13 @@ workflow_dispatch input  >  repository secret  >  repository variable  >  placeh
 | API server | `api_server` | `RD_API_SERVER` | `https://<site_domain>` |
 | Public key | `pub_key` | `RD_PUB_KEY` | *(empty)* |
 | Domain replacement | `site_domain` | `RD_SITE_DOMAIN` | `rd.example.com` |
+| Preset password | — | `RD_PERMANENT_PASSWORD` | *(empty)* |
+| 2FA TOTP secret | — | `RD_2FA_SECRET` | *(empty)* |
+
+The last two are **secrets only** — there is deliberately no dispatch input for them, because
+inputs are written into the public run log. `apply.py` prints `(set)`/`(empty)` for them and never
+the value, and only emits `::add-mask::` inside Actions (locally that directive would print the
+value).
 
 Set them once in `secrets/secrets.env`, then upload:
 

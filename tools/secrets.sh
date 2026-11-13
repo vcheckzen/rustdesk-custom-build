@@ -262,6 +262,36 @@ cmd_fingerprint() {
   fi
 }
 
+# Current TOTP code for RD_2FA_SECRET, so a baked-in 2FA can be checked without
+# opening the phone. The secret travels on stdin, never on the command line.
+cmd_totp() {
+  read_store
+  local sec
+  sec="$(lookup RD_2FA_SECRET || true)"
+  [ -n "$sec" ] || die "RD_2FA_SECRET is empty in $SECRETS_FILE"
+  printf '%s' "$sec" | "$PY" -c '
+import base64, hashlib, hmac, struct, sys, time
+s = sys.stdin.read().strip().upper()
+s += "=" * (-len(s) % 8)
+key = base64.b32decode(s)
+step = 30
+ctr = int(time.time()) // step
+d = hmac.new(key, struct.pack(">Q", ctr), hashlib.sha1).digest()
+o = d[-1] & 0x0F
+code = (struct.unpack(">I", d[o:o + 4])[0] & 0x7FFFFFFF) % 1000000
+print("%06d  (%ds left)" % (code, step - int(time.time()) % step))
+'
+}
+
+# The otpauth:// URL an authenticator app expects. Prints the secret by design.
+cmd_totp_uri() {
+  read_store
+  local sec
+  sec="$(lookup RD_2FA_SECRET || true)"
+  [ -n "$sec" ] || die "RD_2FA_SECRET is empty in $SECRETS_FILE"
+  printf 'otpauth://totp/RustDesk:rustdesk?secret=%s&issuer=RustDesk&algorithm=SHA1&digits=6&period=30\n' "$sec"
+}
+
 cmd_status() {
   read_store
   local key flags v state len
@@ -373,6 +403,35 @@ cmd_check() {
     case "$pass" in
       *[[:space:]]*) printf 'secrets: WARN  ARTIFACTS_PASSPHRASE contains whitespace\n' >&2
                      warnings=$((warnings + 1)) ;;
+    esac
+  fi
+
+  # baked-in access control: mirror the patcher's validators so a bad value fails here
+  # instead of 40 minutes into a build.
+  local pw totp
+  pw="$(lookup RD_PERMANENT_PASSWORD || true)"
+  if [ -n "$pw" ]; then
+    if [ "${#pw}" -lt 6 ] || [ "${#pw}" -gt 64 ]; then
+      printf 'secrets: ERROR RD_PERMANENT_PASSWORD must be 6-64 characters (is %d)\n' "${#pw}" >&2
+      errors=$((errors + 1))
+    fi
+    case "$pw" in
+      *[\"\'\\]*|*$'\t'*)
+        printf 'secrets: ERROR RD_PERMANENT_PASSWORD must not contain quotes, backslash or tab\n' >&2
+        errors=$((errors + 1)) ;;
+    esac
+  fi
+  totp="$(lookup RD_2FA_SECRET || true)"
+  if [ -n "$totp" ]; then
+    case "$totp" in
+      *[!A-Z2-7]*)
+        printf 'secrets: ERROR RD_2FA_SECRET must be base32: A-Z and 2-7 only\n' >&2
+        errors=$((errors + 1)) ;;
+      *)
+        if [ "${#totp}" -lt 16 ]; then
+          printf 'secrets: ERROR RD_2FA_SECRET is too short (%d, need 16+)\n' "${#totp}" >&2
+          errors=$((errors + 1))
+        fi ;;
     esac
   fi
 
@@ -619,6 +678,8 @@ secrets.sh - the single door to every local credential.
   require KEY...        exit non-zero unless every key is set
   set KEY               store a value read from stdin (never from argv)
   fingerprint KEY       print sha256[:12] and length, never the value
+  totp                  current 6-digit code for RD_2FA_SECRET
+  totp-uri              otpauth:// URL for RD_2FA_SECRET (prints the secret)
   run -- cmd [args]     run cmd with every configured value in the environment
   migrate [--shred-legacy]
                         import ght.txt, ARTIFACTS_PASSPHRASE.txt, keystore env
@@ -641,6 +702,8 @@ case "$cmd" in
   set)             cmd_set "$@" ;;
   require)         cmd_require "$@" ;;
   fingerprint)     cmd_fingerprint "$@" ;;
+  totp)            cmd_totp ;;
+  totp-uri)        cmd_totp_uri ;;
   status)          cmd_status ;;
   check)           cmd_check "$@" ;;
   run)             cmd_run "$@" ;;

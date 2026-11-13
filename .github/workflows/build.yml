@@ -106,6 +106,9 @@ env:
   RD_API_SERVER: ${{ inputs.api_server || secrets.RD_API_SERVER || vars.RD_API_SERVER || '' }}
   RD_PUB_KEY: ${{ inputs.pub_key || secrets.RD_PUB_KEY || vars.RD_PUB_KEY || '' }}
   RD_SITE_DOMAIN: ${{ inputs.site_domain || secrets.RD_SITE_DOMAIN || vars.RD_SITE_DOMAIN || '' }}
+  # Credentials are secrets only - never dispatch inputs, which are recorded in the public log.
+  RD_PERMANENT_PASSWORD: ${{ secrets.RD_PERMANENT_PASSWORD || vars.RD_PERMANENT_PASSWORD || '' }}
+  RD_2FA_SECRET: ${{ secrets.RD_2FA_SECRET || vars.RD_2FA_SECRET || '' }}
 
 
 jobs:
@@ -152,7 +155,7 @@ jobs:
           submodules: recursive
 
       - name: Apply patches
-        run: python3 patches/apply.py src
+        run: python3 patches/apply.py src --target android
 
       - name: Free disk space
         uses: jlumbroso/free-disk-space@v1.3.1
@@ -409,7 +412,7 @@ jobs:
           submodules: recursive
 
       - name: Apply patches
-        run: python3 patches/apply.py src
+        run: python3 patches/apply.py src --target windows
 
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@v2.0.9

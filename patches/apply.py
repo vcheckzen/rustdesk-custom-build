@@ -51,6 +51,8 @@ PLACEHOLDERS = {
     "pub_key": "",
     "api_server": "",
     "site_domain": "rd.example.com",
+    "permanent_password": "",
+    "totp_secret": "",
 }
 
 ENV_KEYS = {
@@ -61,6 +63,8 @@ ENV_KEYS = {
     "pub_key": "RD_PUB_KEY",
     "api_server": "RD_API_SERVER",
     "site_domain": "RD_SITE_DOMAIN",
+    "permanent_password": "RD_PERMANENT_PASSWORD",
+    "totp_secret": "RD_2FA_SECRET",
 }
 
 # These values are spliced into Rust/Dart string literals, and on a public repo the dispatch
@@ -68,13 +72,23 @@ ENV_KEYS = {
 # string literal or inject code.
 VALIDATORS = {
     "app_id": r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$",
-    "app_name": r"^[^\"'\\\r\n]{1,64}$",
+    # No quotes/backslash/angle brackets/newlines: this lands in an XML attribute, a
+    # strings.xml text node and a Rust string literal.
+    "app_name": r"^[^\"'\\&<>\r\n]{1,64}$",
     "id_server": r"^[A-Za-z0-9.\-]{1,253}(:[0-9]{1,5})?$",
     "relay_server": r"^$|^[A-Za-z0-9.\-]{1,253}(:[0-9]{1,5})?$",
     "pub_key": r"^[A-Za-z0-9+/=]{0,128}$",
     "api_server": r"^$|^https?://[A-Za-z0-9.\-]{1,253}(:[0-9]{1,5})?(/[A-Za-z0-9._\-/]*)?$",
     "site_domain": r"^[A-Za-z0-9.\-]{1,253}$",
+    # A Rust string literal, so no quote, backslash or control character. Spaces and
+    # punctuation are fine; 6 chars minimum because it protects a remote desktop.
+    "permanent_password": r"^$|^[^\"'\\\r\n\t]{6,64}$",
+    # RFC 4648 base32, the alphabet totp-rs accepts, unpadded.
+    "totp_secret": r"^$|^[A-Z2-7]{16,64}$",
 }
+
+# Never echoed to the log, even as a length.
+SECRET_KEYS = ("permanent_password", "totp_secret")
 
 CONFIG = dict(PLACEHOLDERS)
 INJECTED = []  # keys whose value came from CLI/env, not from the placeholder table
@@ -103,15 +117,33 @@ def resolve_config(cli: dict) -> None:
 
     print("== effective configuration ==")
     for key in ("app_id", "app_name"):
-        print(f"   {key:<13} = {CONFIG[key]}")
-    # Server coordinates are never echoed: on a public repo the run log is public.
-    for key in ("id_server", "relay_server", "api_server", "pub_key", "site_domain"):
-        print(f"   {key:<13} = ({'set' if CONFIG[key] else 'empty'})")
+        print(f"   {key:<19} = {CONFIG[key]}")
+    # Credentials and server coordinates are never echoed: on a public repo the run log is public.
+    for key in (
+        "id_server",
+        "relay_server",
+        "api_server",
+        "pub_key",
+        "site_domain",
+        "permanent_password",
+        "totp_secret",
+    ):
+        print(f"   {key:<19} = ({'set' if CONFIG[key] else 'empty'})")
 
-    # Mask injected server coordinates so they cannot surface in a later step's log.
-    for key in ("id_server", "relay_server", "api_server", "pub_key", "site_domain"):
-        if key in INJECTED and CONFIG[key]:
-            print(f"::add-mask::{CONFIG[key]}")
+    # Mask injected values so they cannot surface in a later step's log. Only inside Actions:
+    # ::add-mask:: literally prints the value, so a local run would leak it to the terminal.
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        for key in (
+            "id_server",
+            "relay_server",
+            "api_server",
+            "pub_key",
+            "site_domain",
+            "permanent_password",
+            "totp_secret",
+        ):
+            if key in INJECTED and CONFIG[key]:
+                print(f"::add-mask::{CONFIG[key]}")
 
 
 
@@ -139,8 +171,23 @@ class Patcher:
         p = self.path(rel)
         p.write_text(text, encoding="utf-8", newline="")
 
-    def sub(self, rel: str, old: str, new: str, *, optional: bool = False, expect: int = 1) -> None:
+    def sub(
+        self,
+        rel: str,
+        old: str,
+        new: str,
+        *,
+        optional: bool = False,
+        expect: int = 1,
+        marker: str = "",
+    ) -> None:
         text = self._read(rel)
+        # `marker` handles insertions, where `new` still contains `old` and the usual
+        # "replacement already present" test would never fire.
+        if marker and marker in text:
+            self.skipped += 1
+            print(f"[skip] {rel}: already patched ({marker[:40]})")
+            return
         if new and new in text and old not in text:
             self.skipped += 1
             print(f"[skip] {rel}: already patched")
@@ -232,6 +279,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("root", help="root of the upstream rustdesk checkout")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument(
+        "--target",
+        choices=("android", "windows", "all"),
+        default="all",
+        help="which platform's defaults to bake in (default: all)",
+    )
     for key, env_key in ENV_KEYS.items():
         ap.add_argument(f"--{key.replace('_', '-')}", default="", help=f"default: env {env_key}")
     args = ap.parse_args()
@@ -257,6 +310,18 @@ def main() -> int:
         '    <string name="app_name">RustDesk</string>',
         f'    <string name="app_name">{CONFIG["app_name"]}</string>',
     )
+    # The launcher label is NOT taken from strings.xml: AndroidManifest.xml hard-codes it,
+    # which is why the icon still read "RustDesk" after the strings patch.
+    p.sub(
+        "flutter/android/app/src/main/AndroidManifest.xml",
+        'android:label="RustDesk Input"',
+        f'android:label="{CONFIG["app_name"]} Input"',
+    )
+    p.sub(
+        "flutter/android/app/src/main/AndroidManifest.xml",
+        '        android:label="RustDesk"',
+        f'        android:label="{CONFIG["app_name"]}"',
+    )
 
     print("== server defaults (no hard-coded third-party server) ==")
     p.sub(
@@ -271,11 +336,28 @@ def main() -> int:
     )
 
     print("== default options ==")
+    target = args.target
     opts_map = {
-        "disable-udp": "Y",          # no UDP hole punching / UDP registration
+        # Both platforms: no UDP at all, and rendezvous/sessions over WebSocket.
+        "disable-udp": "Y",
+        "allow-websocket": "Y",
         "force-always-relay": "Y",   # every session over TCP relay
         "baidu-proxy": "Y",          # Baidu front-proxy master switch
     }
+    if target in ("android", "all"):
+        # Android: no hole punching of any kind, no IPv6 P2P, no WebRTC P2P.
+        opts_map.update(
+            {
+                "enable-tcp-punch": "N",
+                "enable-udp-punch": "N",
+                "enable-ipv6-punch": "N",
+                "enable-webrtc": "N",
+            }
+        )
+    if CONFIG["permanent_password"]:
+        # Only the permanent password is accepted, and it needs no click approval.
+        opts_map["verification-method"] = "use-permanent-password"
+        opts_map["approve-mode"] = "password"
     if CONFIG["id_server"]:
         opts_map["custom-rendezvous-server"] = CONFIG["id_server"]
     if CONFIG["relay_server"]:
@@ -294,6 +376,103 @@ def main() -> int:
         "        RwLock::new(m)\n"
         "    };",
     )
+
+    if target in ("android", "all"):
+        # The startup update check reads a *local* option, so it needs the local default map.
+        # (Renaming the app would also short-circuit it via is_custom_client(), but this is
+        # explicit and survives the name staying "RustDesk".)
+        p.sub(
+            "libs/hbb_common/src/config.rs",
+            "    pub static ref DEFAULT_LOCAL_SETTINGS: RwLock<HashMap<String, String>> = Default::default();",
+            "    pub static ref DEFAULT_LOCAL_SETTINGS: RwLock<HashMap<String, String>> = {\n"
+            "        let mut m = HashMap::new();\n"
+            '        m.insert("enable-check-update".to_owned(), "N".to_owned());\n'
+            "        RwLock::new(m)\n"
+            "    };",
+            marker='m.insert("enable-check-update"',
+        )
+
+    if CONFIG["permanent_password"]:
+        # HARD_SETTINGS is where the fork looks for a preset password, and it is the only
+        # map Config::get_preset_password_storage_and_salt() consults. A plaintext value is
+        # the documented legacy form and is migrated to salted storage on first use.
+        p.sub(
+            "libs/hbb_common/src/config.rs",
+            "    pub static ref HARD_SETTINGS: RwLock<HashMap<String, String>> = Default::default();",
+            "    pub static ref HARD_SETTINGS: RwLock<HashMap<String, String>> = {\n"
+            "        let mut m = HashMap::new();\n"
+            f'        m.insert("password".to_owned(), "{CONFIG["permanent_password"]}".to_owned());\n'
+            "        RwLock::new(m)\n"
+            "    };",
+            marker='m.insert("password"',
+        )
+
+    if CONFIG["totp_secret"]:
+        print("== 2FA: bake the TOTP secret ==")
+        # The stored form is secretbox-encrypted with the machine uuid, so it cannot be
+        # precomputed for someone else's device. Instead the base32 secret is compiled in
+        # and used directly, which also makes the UI's QR code show the same secret.
+        p.sub(
+            "src/auth_2fa.rs",
+            'const TAG_LOGIN: &str = "Connection";',
+            'const TAG_LOGIN: &str = "Connection";\n'
+            "\n"
+            "// Custom build: TOTP secret compiled in from the build secrets. Empty disables the\n"
+            "// override and restores stock behaviour.\n"
+            f'const BAKED_2FA_SECRET: &str = "{CONFIG["totp_secret"]}";\n'
+            "\n"
+            "fn baked_2fa() -> Option<TOTP> {\n"
+            "    if BAKED_2FA_SECRET.is_empty() {\n"
+            "        return None;\n"
+            "    }\n"
+            "    let secret = Secret::Encoded(BAKED_2FA_SECRET.to_owned()).to_bytes().ok()?;\n"
+            "    TOTP::new(\n"
+            "        Algorithm::SHA1,\n"
+            "        6,\n"
+            "        1,\n"
+            "        30,\n"
+            "        secret,\n"
+            '        Some(format!("{} {}", ISSUER, TAG_LOGIN)),\n'
+            "        String::new(),\n"
+            "    )\n"
+            "    .ok()\n"
+            "}",
+            marker="const BAKED_2FA_SECRET",
+        )
+        p.sub(
+            "src/auth_2fa.rs",
+            "pub fn get_2fa(raw: Option<String>) -> Option<TOTP> {\n"
+            '    TOTPInfo::from_str(&raw.unwrap_or(Config::get_option("2fa")))\n'
+            "        .map(|x| Some(x))\n"
+            "        .unwrap_or_default()\n"
+            "}",
+            "pub fn get_2fa(raw: Option<String>) -> Option<TOTP> {\n"
+            "    if let Some(totp) = baked_2fa() {\n"
+            "        return Some(totp);\n"
+            "    }\n"
+            '    TOTPInfo::from_str(&raw.unwrap_or(Config::get_option("2fa")))\n'
+            "        .map(|x| Some(x))\n"
+            "        .unwrap_or_default()\n"
+            "}",
+            marker="if let Some(totp) = baked_2fa() {\n        return Some(totp);",
+        )
+        p.sub(
+            "src/auth_2fa.rs",
+            "pub fn generate2fa() -> String {\n"
+            '    #[cfg(not(any(target_os = "android", target_os = "ios")))]\n'
+            "    let id = crate::ipc::get_id();\n"
+            '    #[cfg(any(target_os = "android", target_os = "ios"))]\n'
+            "    let id = Config::get_id();",
+            "pub fn generate2fa() -> String {\n"
+            "    if let Some(totp) = baked_2fa() {\n"
+            "        return totp.get_url();\n"
+            "    }\n"
+            '    #[cfg(not(any(target_os = "android", target_os = "ios")))]\n'
+            "    let id = crate::ipc::get_id();\n"
+            '    #[cfg(any(target_os = "android", target_os = "ios"))]\n'
+            "    let id = Config::get_id();",
+            marker="return totp.get_url();",
+        )
 
     print("== proxy funnel: route everything through the local Baidu shim ==")
     p.sub(

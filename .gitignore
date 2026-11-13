@@ -16,11 +16,15 @@ tools/.keystore.env
 key.properties
 
 # ---- local only ----
+# vendored tools (gh, ...) downloaded on demand; never commit binaries
+tools/bin/
 .workbuddy-ai/
 src/
 build/
 dist/
 target/
 *.log
+__pycache__/
+*.pyc
 .DS_Store
 Thumbs.db
