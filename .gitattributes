@@ -1,0 +1,13 @@
+# Line endings: always LF, on every platform.
+#
+# core.autocrlf=true is common on Windows and rewrites the working tree to
+# CRLF on checkout. That breaks these scripts twice over: "#!/usr/bin/env bash\r"
+# is not a valid interpreter path, and the CR survives into the string literals
+# patches/apply.py splices into Rust sources.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.jpg binary
+*.zip binary
+*.keystore binary
